@@ -38,6 +38,7 @@ func handle(msgs <-chan amqp.Delivery) {
 	for d := range msgs {
 		log.Printf("Received a message: %s", d.Body)
 
+		d.Ack(false)
 		// time.Sleep(time.Second * 2)
 	}
 }

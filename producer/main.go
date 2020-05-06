@@ -55,6 +55,9 @@ func main() {
 	err = ch.Confirm(false)
 	failOnError(err, "Channel could not be put into confirm mode")
 
+	// what happens if there is no routeA-"consumer"?
+	// In that case I want the input source to "know" that there is no one for that request.
+	// And since there is no "rabbit consumer" consuming this message, it is discarded.
 	returnCh := make(chan amqp.Return)
 	ch.NotifyReturn(returnCh)
 
@@ -91,6 +94,8 @@ func main() {
 	)
 	failOnError(err, "Failed to declare a delay_queue")
 
+	// First, we need to make sure that the queue will survive a RabbitMQ node restart.
+	// In order to do so, we need to declare it as durable
 	q, err := ch.QueueDeclare(
 		"jack_q_1", // name
 		true,       // durable
@@ -112,6 +117,16 @@ func main() {
 
 	for i := 0; i < 5; i++ {
 		log.Println("Publishing msg")
+
+		// Now we need to mark our messages as persistent - by using the amqp.
+		// Persistent option amqp.Publishing takes.
+		// Marking messages as persistent doesn't fully guarantee that a message won't be lost.
+		// Although it tells RabbitMQ to save the message to disk,
+		// there is still a short time window when RabbitMQ has accepted a message and hasn't saved it yet.
+		// Also, RabbitMQ doesn't do fsync(2) for every message --
+		// it may be just saved to cache and not really written to the disk.
+		// The persistence guarantees aren't strong, but it's more than enough for our simple task queue.
+		// If you need a stronger guarantee then you can use publisher confirms.
 		err = ch.Publish(
 			"",          // exchange
 			delayQ.Name, // routing key
@@ -121,7 +136,7 @@ func main() {
 				ContentType:  "text/plain",
 				Body:         []byte("hi jack!" + strconv.Itoa(i)),
 				Expiration:   "2000", // 过期时间(毫秒)
-				DeliveryMode: 2,
+				DeliveryMode: amqp.Persistent,
 			},
 		)
 		failOnError(err, "Failed to publish a message")
@@ -129,7 +144,11 @@ func main() {
 		log.Printf("waiting for confirmation of one publishing")
 		select {
 		case returnNotification := <-returnCh:
-			log.Fatalf("returnNotification error: %#v", returnNotification)
+			if returnNotification.ReplyCode == amqp.NoRoute {
+				log.Printf("no amqp route for %s", delayQ.Name)
+			} else {
+				log.Fatalf("returnNotification error: %#v", returnNotification)
+			}
 		case <-ack:
 			log.Println("ack")
 		case <-nack:
